@@ -1,9 +1,12 @@
 # Design Spec — Local Web GUI for Whisper Transcription
 
 - **Date:** 2026-06-19
-- **Status:** Approved (pending written-spec review)
-- **Branch:** `feat/web-gui` (based on `fix/whisper-trailing-hallucination`, which carries
-  the `condition_on_previous_text=False` hallucination fix the GUI relies on for clean output)
+- **Status:** Approved — review changes folded in (verified numpy/pillow resolution, stem
+  sanitization, fix-branch stability)
+- **Branch:** `feat/web-gui`, based on `fix/whisper-trailing-hallucination` (commit
+  `c15937f`) — **confirmed stable and ready to merge**: full suite (41 tests) green, working
+  tree clean. The GUI relies on that branch's `condition_on_previous_text=False` fix for
+  clean output.
 - **Author:** brainstorming session (Claude + user)
 
 ## 1. Context & goal
@@ -44,6 +47,10 @@ commit and is stale. Confirmed facts from reading the current code:
   - `src/transcription/diarization_config.py` — `resolve_hf_token` (raises if `HF_TOKEN` absent)
 - **Python 3.9.6** in the venv ⇒ **Gradio 4.x** (`gradio>=4.44,<5`); Gradio 5 needs Python
   ≥3.10. Decision: stay on 3.9 + Gradio 4.x (zero disruption to the working venv).
+  **Verified** (`pip install --dry-run 'gradio>=4.44,<5'`, no install): resolves to
+  **gradio 4.44.1** and leaves **numpy 2.0.2, torch, and openai-whisper untouched** (none
+  appear in the resolver's install set). See §11 for the hardened dependency rule + the one
+  pillow caveat.
 - **History store: JSON index file** (not SQLite) — single-user, zero new deps.
 - **Scope: full, phased core-first** (Phase 1 shippable, Phase 2 adds the rest).
 
@@ -136,9 +143,17 @@ tqdm bar; the GUI passes a callback that updates `gr.Progress`. No behavior chan
 
 ## 6. Output naming & coexistence (folded-in refinement #3)
 
-GUI output basename: **`<stem>__<model>`** (e.g. `walkthrough__base.srt`,
+**Stem sanitization (folded-in).** Before building the output name, the uploaded file's stem
+is sanitized: Unicode-normalize (NFC); keep readable Unicode/Arabic where filesystem-safe;
+replace path separators and OS-reserved/illegal characters (`/ \ : * ? " < > |`, ASCII
+control chars) and collapse runs of whitespace to `_`; strip leading/trailing dots and
+spaces; truncate the stem to a safe length (≤80 chars, preserving uniqueness via the id
+suffix). If the result is empty (e.g. a name that was entirely illegal characters), fall back
+to the job id. This runs for the GUI path only; the CLI keeps the OS-provided stem.
+
+GUI output basename: **`<sanitized-stem>__<model>`** (e.g. `walkthrough__base.srt`,
 `walkthrough__large-v3.srt`). If that basename already exists (same source + same model run
-again), append a short unique suffix from the job id: `<stem>__<model>__<id8>`.
+again), append a short unique suffix from the job id: `<sanitized-stem>__<model>__<id8>`.
 
 **Confirmed:** this lets **multiple transcriptions of the same source file coexist without
 overwriting** — `base` vs `large-v3` of one video produce distinct files
@@ -181,6 +196,11 @@ scale). `delete(id)` removes the record and its output files.
 - `tests/test_service.py` — `transcribe_file` with a **mocked** Whisper model: asserts
   txt/srt/vtt written, returned metadata correct, **`params.yaml` untouched**, single-slot
   cache evicts on model change & reuses on same model, cleanup/diarize toggles wire through.
+- `tests/test_sanitize_stem.py` — stem sanitization unit tests: **an Arabic/Unicode filename**
+  (e.g. `محاضرة الفيزياء.mp4`) sanitizes to a filesystem-safe, non-empty, readable stem that
+  round-trips through the output-naming path; plus spaces, OS-reserved/illegal chars
+  (`/ \ : * ? " < > |`), an over-long name (truncated to ≤80 chars), and an all-illegal name
+  (falls back to the job id). Asserts the final `<stem>__<model>` path is writable and unique.
 - `tests/test_history.py` — add/list/get/delete/search round-trip on a temp JSON; delete
   removes files.
 - `tests/test_formatter_srt_vtt.py` — SRT/VTT timestamp formatting from known segments
@@ -190,10 +210,11 @@ scale). `delete(id)` removes the record and its output files.
 ## 10. Phasing
 
 **Phase 1 — core, shippable:**
-`transcribe_file` + single-slot model cache; `main.py` refactor (CLI unchanged); `app.py`
-with upload+validation, model/language(+auto-detect), Transcribe, live progress, raw result,
-txt download; JSON `HistoryStore` (list/open/download/delete); one-at-a-time queue; graceful
-Ollama handling; `MediaDecodeError`; service + history tests; `requirements-gui.txt`; docs
+`transcribe_file` + single-slot model cache; **stem sanitization + collision-safe output
+naming** (§6); `main.py` refactor (CLI unchanged); `app.py` with upload+validation,
+model/language(+auto-detect), Transcribe, live progress, raw result, txt download; JSON
+`HistoryStore` (list/open/download/delete); one-at-a-time queue; graceful Ollama handling;
+`MediaDecodeError`; service + history + sanitization tests; `requirements-gui.txt`; docs
 (README EN/RU + CLAUDE.md + `python app.py` one-liner).
 
 **Phase 2 — added (top-down priority):**
@@ -203,8 +224,19 @@ error + log-tail surfacing in the UI; srt/vtt tests.
 
 ## 11. Risks / open notes
 
-- `gradio>=4.44,<5` vs installed `numpy 2.0.2` / `pillow 11.3.0` — expected compatible;
-  verify at install time in Phase 1, pin narrower if needed.
+- **Dependency rule (hardened, verified).** The GUI install MUST NOT downgrade `numpy`,
+  `torch`, or `openai-whisper` — the ASR stack runs on `numpy 2.0.2` and a downgrade can
+  break it. Verified via `pip install --dry-run 'gradio>=4.44,<5'`: it resolves to
+  **gradio 4.44.1** with **numpy/torch/whisper unchanged** (none appear in the resolver's
+  install set). If any future gradio pin would force `numpy<2`, pick a different gradio 4.x
+  that accepts numpy 2 — never move numpy. **Do not assume; re-run the dry-run whenever the
+  pin changes.**
+  - **Caveat — pillow:** gradio 4.x pins `pillow<11`, so installing it downgrades
+    `pillow 11.3.0 → 10.4.0`. Pillow is used only by `moviepy` (frame I/O), NOT by the ASR
+    stack, and 10.4.0 is within the repo's existing `pillow<12.0` allowance. No gradio 4.x
+    avoids this (4.44.1 is the final 4.x). **Install-time gate:** after installing the GUI
+    deps, confirm the ASR stack still imports and the existing 41 tests pass; if the pillow
+    downgrade breaks anything, isolate gradio in a dedicated venv rather than moving it back.
 - openai-whisper progress is an **estimate** (no true decoder callback); acceptable and
   matches current CLI behavior.
 - Past-entry **media playback** is out of scope (inputs not persisted); transcript

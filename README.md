@@ -32,9 +32,13 @@ This project transcribes media using a locally hosted Whisper model, then option
 │   ├── params.yaml             # Whisper model and cleanup settings
 │   └── prompts.yaml            # Cleanup prompt for Ollama
 ├── src/
-│   ├── cleanup.py              # Ollama cleanup logic
-│   ├── file_preprocessing.py   # Media discovery/extraction/transcript file operations
-│   └── utils.py                # Reusable utilities and shared error handling
+│   ├── ingestion/              # Media discovery and audio extraction from video
+│   ├── transcription/          # Whisper ASR engine + pyannote diarization
+│   ├── processing/             # Ollama cleanup
+│   ├── output/                 # Transcript formatting and file writing
+│   ├── pipeline/               # Step orchestrator and pipeline steps
+│   ├── models/                 # Dataclasses (transcript document, segments, context)
+│   └── utils/                  # CLI parsing, config, device, logging, errors
 ├── requirements.txt
 ├── main.py                     # Root orchestrator entrypoint
 ├── Dockerfile                  # Container image definition
