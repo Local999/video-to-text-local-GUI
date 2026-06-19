@@ -1037,7 +1037,7 @@ class TestTranscribeFile:
         cfg = _tmp_config(tmp_path)
         src_audio = tmp_path / "clip.mp3"
         src_audio.write_bytes(b"x")
-        monkeypatch.setattr(service, "_probe_ok", lambda p, t: True)  # skip real decode probe
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)  # skip real decode probe
 
         result = service.transcribe_file(
             src_audio, model="base", language="en", config_path=cfg, sanitize_output=True
@@ -1054,7 +1054,7 @@ class TestTranscribeFile:
         before = params_file.read_text(encoding="utf-8")
         src_audio = tmp_path / "clip.mp3"
         src_audio.write_bytes(b"x")
-        monkeypatch.setattr(service, "_probe_ok", lambda p, t: True)
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
         service.transcribe_file(src_audio, model="large-v3", language="en", config_path=cfg, sanitize_output=True)
         assert params_file.read_text(encoding="utf-8") == before
 
@@ -1204,11 +1204,6 @@ def _resolve_device(logger: logging.Logger) -> str:
     if _device_cache is None:
         _device_cache = select_device(logger)
     return _device_cache
-
-
-def _probe_ok(path: Path, input_type: str) -> bool:
-    """Cheap pre-flight decode check; ingestion steps do the authoritative one."""
-    return True  # real probing happens in the ingestion step; overridable in tests
 
 
 def get_diarization_backend(config, device: str, logger: logging.Logger):
@@ -1376,7 +1371,7 @@ def transcribe_file(
 
 > **Cleanup graceful degradation:** `CleanupStep` calls `cleanup_with_ollama`, which raises `ProcessingError` when Ollama is unreachable. To keep the raw transcript, the cleanup must not abort the whole job. Implement this by wrapping the cleanup call so a failure is logged and skipped rather than raised — see Task 14 (Phase 2) where the GUI exposes cleanup. **For Phase 1, the GUI does not pass `cleanup=True`,** so no change to `CleanupStep` is needed yet; the `status == "warning"` branch above is the contract Task 14 fulfills.
 
-> **`_probe_ok` seam:** kept as an overridable no-op so tests can bypass real decoding; the authoritative decode check lives in the ingestion steps (Task 4).
+> **Decode-probe seam (tests):** the authoritative decode check lives in the ingestion steps (Task 4, `steps_ingestion._probe_duration`). Service-level tests that use fake-bytes fixtures monkeypatch `src.pipeline.steps_ingestion._probe_duration` to bypass real decoding.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2326,7 +2321,7 @@ Append to `tests/test_service.py` (inside `TestTranscribeFile`):
         cfg = _tmp_config(tmp_path)
         src_audio = tmp_path / "clip.mp3"
         src_audio.write_bytes(b"x")
-        monkeypatch.setattr(service, "_probe_ok", lambda p, t: True)
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
 
         from src.utils import ProcessingError
 
