@@ -33,6 +33,7 @@ class PipelineOrchestrator:
             try:
                 context = step.execute(context, self._logger)
             except Exception as exc:
+                context.exception = exc
                 context.fail(f"Step '{step.name}' failed: {exc}")
                 self._logger.exception("Step '%s' failed: %s", step.name, exc)
                 break

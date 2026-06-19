@@ -70,7 +70,17 @@ def transcribe_audio(
         logger.debug("Could not estimate media duration for progress bar: %s", audio_path)
 
     try:
-        result = model.transcribe(audio_str, language=language, fp16=False)
+        # condition_on_previous_text=False stops Whisper's self-conditioning
+        # decode loop from running away into repeated/garbled phantom segments
+        # on low-confidence trailing audio (silence, outro, background noise).
+        # With the default (True), large-v3 emitted ~18s of hallucinated
+        # content past the true end of audio. See tests/test_asr_engine.py.
+        result = model.transcribe(
+            audio_str,
+            language=language,
+            fp16=False,
+            condition_on_previous_text=False,
+        )
     finally:
         stop_event.set()
         if thread:
