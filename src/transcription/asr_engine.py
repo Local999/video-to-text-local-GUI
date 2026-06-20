@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from tqdm import tqdm
@@ -31,13 +32,18 @@ def _get_audio_duration_seconds(audio_path: str) -> float | None:
 def transcribe_audio(
     model,
     audio_path: Path,
-    language: str,
+    language: str | None,
     progress_update_interval_seconds: float,
     logger: logging.Logger,
+    *,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> TranscriptDocument:
     """Run Whisper transcription and return a structured TranscriptDocument.
 
-    Preserves segment-level data (text, timestamps) from Whisper output.
+    Preserves segment-level data (text, timestamps) from Whisper output. When
+    ``language`` is falsy (None or ""), Whisper auto-detects and the detected
+    language is stored on the returned document. ``progress_callback`` (optional)
+    receives a 0.0-1.0 fraction during the run and 1.0 on completion.
     """
     audio_str = str(audio_path)
     total_seconds = _get_audio_duration_seconds(audio_str)
@@ -57,6 +63,8 @@ def transcribe_audio(
             if current != pbar.n:
                 pbar.n = current
                 pbar.refresh()
+            if progress_callback is not None:
+                progress_callback(min(elapsed / total_seconds, 1.0))
             time.sleep(progress_update_interval_seconds)
         pbar.n = pbar.total
         pbar.refresh()
@@ -69,22 +77,23 @@ def transcribe_audio(
     else:
         logger.debug("Could not estimate media duration for progress bar: %s", audio_path)
 
+    transcribe_kwargs = {"fp16": False, "condition_on_previous_text": False}
+    if language:  # None or "" => auto-detect (omit the language kwarg entirely)
+        transcribe_kwargs["language"] = language
+
     try:
         # condition_on_previous_text=False stops Whisper's self-conditioning
         # decode loop from running away into repeated/garbled phantom segments
         # on low-confidence trailing audio (silence, outro, background noise).
         # With the default (True), large-v3 emitted ~18s of hallucinated
         # content past the true end of audio. See tests/test_asr_engine.py.
-        result = model.transcribe(
-            audio_str,
-            language=language,
-            fp16=False,
-            condition_on_previous_text=False,
-        )
+        result = model.transcribe(audio_str, **transcribe_kwargs)
     finally:
         stop_event.set()
         if thread:
             thread.join(timeout=0.5)
+        if progress_callback is not None:
+            progress_callback(1.0)
 
     segments = [
         TranscriptSegment(
@@ -98,10 +107,12 @@ def transcribe_audio(
     if not segments and result.get("text"):
         segments = [TranscriptSegment(text=result["text"])]
 
+    detected_language = result.get("language") or language or "unknown"
+
     doc = TranscriptDocument(
         source_file=str(audio_path),
         segments=segments,
-        language=language,
+        language=detected_language,
         pipeline_state=PipelineState.TRANSCRIBED,
     )
 
