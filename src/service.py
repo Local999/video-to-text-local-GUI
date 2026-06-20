@@ -1,10 +1,35 @@
 from __future__ import annotations
 
+import functools
 import gc
 import logging
 import threading
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import whisper
+
+from src.models import PipelineContext, TranscriptDocument
+from src.pipeline import (
+    AudioIngestionStep,
+    CleanupStep,
+    DiarizationStep,
+    OutputStep,
+    PipelineOrchestrator,
+    TranscriptionStep,
+    VideoIngestionStep,
+)
+from src.processing import cleanup_with_ollama
+from src.transcription.diarization_config import load_diarization_config
+from src.transcription.diarizer import create_diarization_backend
+from src.utils import MediaDecodeError, ProcessingError, load_yaml_file, select_device
+from src.utils.naming import build_output_basename, sanitize_stem
+
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+_AUDIO_EXTS = {".mp3", ".m4a"}
+_device_cache: str | None = None
 
 _MODEL_LOCK = threading.Lock()
 _resident_model: tuple[str, object] | None = None  # (name, model)
@@ -47,9 +72,195 @@ def get_whisper_model(name: str, device: str, logger: logging.Logger | None = No
 
 def reset_caches() -> None:
     """Drop the resident model and diarization backend (tests/teardown)."""
-    global _resident_model, _diarization_backend
+    global _resident_model, _diarization_backend, _device_cache
     with _MODEL_LOCK:
         _resident_model = None
         _diarization_backend = None
+        _device_cache = None
         gc.collect()
         _empty_cuda_cache()
+
+
+@dataclass
+class TranscribeResult:
+    document: TranscriptDocument | None
+    txt_path: str | None
+    clean_path: str | None
+    srt_path: str | None
+    vtt_path: str | None
+    model: str
+    language: str | None
+    options: dict
+    status: str  # "success" | "warning" | "failed"
+    warnings: list[str] = field(default_factory=list)
+    message: str | None = None
+
+
+def _resolve_device(logger: logging.Logger) -> str:
+    global _device_cache
+    if _device_cache is None:
+        _device_cache = select_device(logger)
+    return _device_cache
+
+
+def get_diarization_backend(config, device: str, logger: logging.Logger):
+    """Return a cached diarization backend, keyed by (backend, model)."""
+    global _diarization_backend
+    with _MODEL_LOCK:
+        key = (config.backend, config.model)
+        if _diarization_backend is not None and _diarization_backend[:2] == key:
+            return _diarization_backend[2]
+        backend = create_diarization_backend(config, device, logger)
+        _diarization_backend = (config.backend, config.model, backend)
+        return backend
+
+
+def transcribe_file(
+    source_path,
+    *,
+    model: str,
+    language: str | None = None,
+    cleanup: bool = False,
+    diarize: bool = False,
+    num_speakers: int | None = None,
+    write_srt_vtt: bool = False,
+    sanitize_output: bool = False,
+    config_path: str = "configurations/general_config.yaml",
+    logger: logging.Logger | None = None,
+    progress_callback: Callable[[float], None] | None = None,
+) -> TranscribeResult:
+    """Build and run the existing step-pipeline for ONE file with per-job params.
+
+    `params.yaml` is never mutated: `model`/`language`/`cleanup`/`diarize` are
+    arguments. The same function backs both the CLI and the GUI.
+    """
+    source_path = Path(source_path)
+    logger = logger or logging.getLogger("video_to_text")
+    cfg = load_yaml_file(config_path)
+    paths = cfg["paths"]
+    output = cfg["output"]
+    ollama = cfg["ollama"]
+    processing = cfg["processing"]
+    dependencies = cfg["dependencies"]
+
+    transcripts_dir = Path(paths["transcripts"])
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+    audios_dir = Path(paths["audios"])
+    audios_dir.mkdir(parents=True, exist_ok=True)
+    ext = source_path.suffix.lower()
+    transcript_extension = output["transcript_extension"]
+
+    options = {"cleanup": cleanup, "diarize": diarize, "num_speakers": num_speakers}
+
+    # --- classify input ---
+    if ext in _VIDEO_EXTS:
+        input_type = "video"
+        ingestion_step = VideoIngestionStep(audios_dir, output["extracted_audio_extension"])
+    elif ext in _AUDIO_EXTS:
+        input_type = "audio"
+        ingestion_step = AudioIngestionStep()
+    else:
+        raise MediaDecodeError(
+            f"Unsupported file type '{ext or source_path.name}'. "
+            f"Supported: {', '.join(sorted(_VIDEO_EXTS | _AUDIO_EXTS))}."
+        )
+
+    # --- output basename (GUI: sanitized + collision-safe; CLI: plain stem) ---
+    job_id = uuid.uuid4().hex
+    if sanitize_output:
+        stem = sanitize_stem(source_path.stem, fallback=job_id[:8])
+        basename = build_output_basename(
+            stem,
+            model,
+            exists=lambda b: (transcripts_dir / (b + transcript_extension)).exists(),
+            job_id=job_id,
+        )
+    else:
+        basename = None
+
+    device = _resolve_device(logger)
+    whisper_model = get_whisper_model(model, device, logger)
+
+    # --- assemble steps ---
+    transcription_step = TranscriptionStep(
+        whisper_model=whisper_model,
+        progress_update_interval=processing["progress_update_interval_seconds"],
+        progress_callback=progress_callback,
+    )
+    steps = [ingestion_step, transcription_step]
+
+    if diarize:
+        diar_cfg = load_diarization_config(cfg["files"]["diarization"])
+        diar_cfg.enabled = True
+        backend = get_diarization_backend(diar_cfg, device, logger)
+        steps.append(
+            DiarizationStep(
+                backend=backend,
+                config=diar_cfg,
+                work_dir=audios_dir / ".diarization_cache",
+                ffmpeg_executable=dependencies["ffmpeg_executable"],
+                num_speakers_override=num_speakers,
+            )
+        )
+
+    if cleanup:
+        params = load_yaml_file(cfg["files"]["params"])  # read-only
+        prompts = load_yaml_file(cfg["files"]["prompts"])
+        cleanup_func = functools.partial(
+            cleanup_with_ollama,
+            cleanup_model_name=params["cleanup_model"],
+            cleanup_prompt=prompts["cleanup_prompt"],
+            device=device,
+            ollama_url=ollama["url"],
+            ollama_timeout_seconds=ollama["timeout_seconds"],
+            ollama_request_content_type=ollama["request_content_type"],
+            logger=logger,
+        )
+        steps.append(CleanupStep(cleanup_func))
+
+    steps.append(
+        OutputStep(
+            transcripts_folder=transcripts_dir,
+            transcript_extension=transcript_extension,
+            cleaned_suffix=output["cleaned_suffix"],
+            output_basename=basename,
+        )
+    )
+
+    # --- run ---
+    context = PipelineContext(source_path=source_path, input_type=input_type, language=language or "")
+    pipeline = PipelineOrchestrator(steps=steps, logger=logger)
+    context = pipeline.run(context)
+
+    # --- classify outcome ---
+    if context.exception is not None:
+        if isinstance(context.exception, MediaDecodeError):
+            raise context.exception
+        return TranscribeResult(
+            document=context.document, txt_path=None, clean_path=None, srt_path=None, vtt_path=None,
+            model=model, language=language, options=options, status="failed",
+            message=str(context.exception),
+        )
+
+    doc = context.document
+    outputs = (doc.metadata.get("outputs") if doc else None) or {}
+    warnings: list[str] = []
+    status = "success"
+    # Cleanup was requested but produced nothing (e.g. Ollama down) -> warning.
+    if cleanup and not outputs.get("clean"):
+        warnings.append("Cleanup unavailable; raw transcript saved.")
+        status = "warning"
+
+    return TranscribeResult(
+        document=doc,
+        txt_path=outputs.get("txt"),
+        clean_path=outputs.get("clean"),
+        srt_path=outputs.get("srt"),
+        vtt_path=outputs.get("vtt"),
+        model=model,
+        language=(doc.language if doc else language),
+        options=options,
+        status=status,
+        warnings=warnings,
+        message="; ".join(warnings) or None,
+    )
