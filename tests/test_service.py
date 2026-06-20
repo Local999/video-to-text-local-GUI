@@ -107,6 +107,27 @@ class TestTranscribeFile:
         with pytest.raises(MediaDecodeError):
             service.transcribe_file(bad, model="base", language="en", config_path=cfg)
 
+    def test_cleanup_failure_keeps_raw_and_warns(self, monkeypatch, tmp_path):
+        self._patch(monkeypatch)
+        cfg = _tmp_config(tmp_path)
+        src_audio = tmp_path / "clip.mp3"
+        src_audio.write_bytes(b"x")
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
+
+        from src.utils import ProcessingError
+
+        def boom(*a, **k):
+            raise ProcessingError("Ollama down")
+
+        monkeypatch.setattr("src.pipeline.steps_cleanup.format_document_with_speakers", lambda d: "text")
+        monkeypatch.setattr(service, "cleanup_with_ollama", boom)
+        result = service.transcribe_file(
+            src_audio, model="base", language="en", cleanup=True, config_path=cfg, sanitize_output=True
+        )
+        assert result.status == "warning"
+        assert Path(result.txt_path).exists()        # raw transcript saved
+        assert result.clean_path is None
+
     def test_auto_detect_passes_no_language_kwarg(self, monkeypatch, tmp_path):
         # Integration: real transcribe_audio + real pipeline; only the Whisper
         # model and the decode probe are mocked. Asserts language=None reaches

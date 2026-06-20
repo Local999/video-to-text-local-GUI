@@ -135,9 +135,9 @@ def transcribe_file(
     `params.yaml` is never mutated: `model`/`language`/`cleanup`/`diarize` are
     arguments. The same function backs both the CLI and the GUI.
 
-    Note: ``write_srt_vtt`` and the ``srt_path``/``vtt_path`` result fields are
-    placeholders wired up in a later task (SRT/VTT output); in the current code
-    they have no effect and the paths remain ``None``.
+    When ``write_srt_vtt=True`` and the transcript contains timestamped segments,
+    SRT and VTT subtitle files are written alongside the plain-text transcript and
+    their paths are returned in ``srt_path``/``vtt_path`` on the result.
     """
     source_path = Path(source_path)
     logger = logger or logging.getLogger("video_to_text")
@@ -229,6 +229,7 @@ def transcribe_file(
             transcript_extension=transcript_extension,
             cleaned_suffix=output["cleaned_suffix"],
             output_basename=basename,
+            write_srt_vtt=write_srt_vtt,
         )
     )
 
