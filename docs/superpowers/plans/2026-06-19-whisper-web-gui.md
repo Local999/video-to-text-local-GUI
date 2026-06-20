@@ -249,6 +249,19 @@ class TestSanitizeStem:
     def test_strips_leading_trailing_dots_and_spaces(self):
         assert sanitize_stem("  ..name..  ") == "name"
 
+    def test_windows_reserved_device_name_prefixed(self):
+        # Windows treats CON (with OR without an extension) as the CON device,
+        # so the bare root name must be escaped with a leading "_".
+        assert sanitize_stem("CON.mp4") == "_CON.mp4"
+        assert sanitize_stem("con") == "_con"  # case-insensitive
+        assert sanitize_stem("LPT9") == "_LPT9"
+
+    def test_all_dots_with_extension_stays_non_empty(self):
+        # A name that is only dots/extension must never sanitize to "" --
+        # it falls back to the document id (here the default "transcript").
+        out = sanitize_stem("....mp4")
+        assert out  # non-empty
+
 
 class TestBuildOutputBasename:
     def test_no_collision_returns_plain(self):
@@ -287,6 +300,16 @@ _ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
 _UNDERSCORES = re.compile(r"_+")
 
+# Windows reserved device names. A file whose root name (the part before the
+# first ".") matches one of these is unusable on Windows REGARDLESS of any
+# extension -- "CON.mp4" is still the CON device. The user's platform is
+# Windows, so guard these. Compared case-insensitively.
+_RESERVED_NAMES = (
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
 
 def sanitize_stem(name: str, *, fallback: str = "transcript", max_len: int = 80) -> str:
     """Normalize an uploaded file's stem into a filesystem-safe, readable stem.
@@ -296,15 +319,26 @@ def sanitize_stem(name: str, *, fallback: str = "transcript", max_len: int = 80)
     - collapses whitespace runs to "_" and repeated "_" to a single "_"
     - strips leading/trailing dots, spaces, and underscores
     - truncates to ``max_len`` characters
-    - returns ``fallback`` when nothing safe remains
+    - prefixes "_" when the root name is a Windows reserved device name
+      (CON, PRN, AUX, NUL, COM1-9, LPT1-9), so the file is writable on Windows
+    - returns ``fallback`` when nothing safe remains. Callers pass the document
+      id as ``fallback`` (it defaults to "transcript" only when no id is given),
+      so an all-dots / all-illegal name still yields a usable, unique stem.
     """
     stem = unicodedata.normalize("NFC", name)
     stem = _ILLEGAL.sub("_", stem)
     stem = _WHITESPACE.sub("_", stem)
     stem = _UNDERSCORES.sub("_", stem)
-    stem = stem.strip(" ._ ")
+    stem = stem.strip(" ._")
     stem = stem[:max_len].strip(" ._")
-    return stem or fallback
+    if not stem:
+        return fallback
+    # Reserved-name check runs on the sanitized stem so it can't be bypassed by
+    # illegal chars; the "_" prefix makes "CON" -> "_CON", "CON.mp4" -> "_CON.mp4".
+    root = stem.split(".", 1)[0]
+    if root.upper() in _RESERVED_NAMES:
+        stem = "_" + stem
+    return stem
 
 
 def build_output_basename(
@@ -329,7 +363,7 @@ def build_output_basename(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_naming.py -v`
-Expected: PASS (10 tests).
+Expected: PASS (12 tests).
 
 - [ ] **Step 5: Commit**
 

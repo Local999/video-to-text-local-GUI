@@ -62,3 +62,66 @@ def test_transcribe_preserves_segment_data():
     assert [s.text for s in doc.segments] == ["first", "second"]
     assert doc.segments[0].start_time == 0.0
     assert doc.segments[-1].end_time == 3.0
+
+
+class TestProgressAndLanguage:
+    def _model(self, result):
+        from unittest.mock import MagicMock
+
+        model = MagicMock()
+        model.transcribe.return_value = result
+        return model
+
+    def test_progress_callback_called_with_completion(self):
+        import logging
+        from pathlib import Path
+
+        from src.transcription.asr_engine import transcribe_audio
+
+        calls = []
+        model = self._model({"text": "hi", "segments": [], "language": "en"})
+        transcribe_audio(
+            model=model,
+            audio_path=Path("/tmp/nope.mp3"),
+            language="en",
+            progress_update_interval_seconds=0.01,
+            logger=logging.getLogger("t"),
+            progress_callback=lambda f: calls.append(f),
+        )
+        assert calls and calls[-1] == 1.0  # always signals completion
+
+    def test_detected_language_captured_when_auto(self):
+        import logging
+        from pathlib import Path
+
+        from src.transcription.asr_engine import transcribe_audio
+
+        model = self._model({"text": "hola", "segments": [], "language": "es"})
+        doc = transcribe_audio(
+            model=model,
+            audio_path=Path("/tmp/nope.mp3"),
+            language=None,
+            progress_update_interval_seconds=0.01,
+            logger=logging.getLogger("t"),
+        )
+        assert doc.language == "es"
+        # language=None means we pass no language kwarg to Whisper (auto-detect)
+        _, kwargs = model.transcribe.call_args
+        assert "language" not in kwargs
+
+    def test_empty_string_language_routes_to_auto(self):
+        import logging
+        from pathlib import Path
+
+        from src.transcription.asr_engine import transcribe_audio
+
+        model = self._model({"text": "hi", "segments": [], "language": "fr"})
+        transcribe_audio(
+            model=model,
+            audio_path=Path("/tmp/nope.mp3"),
+            language="",  # empty string must also auto-detect (regression guard)
+            progress_update_interval_seconds=0.01,
+            logger=logging.getLogger("t"),
+        )
+        _, kwargs = model.transcribe.call_args
+        assert "language" not in kwargs  # no language kwarg passed at all
