@@ -33,6 +33,14 @@ def test_segments_without_timestamps_skipped():
     assert format_srt(doc).strip() == ""
 
 
+def test_speaker_id_used_when_label_absent():
+    doc = TranscriptDocument(segments=[
+        TranscriptSegment(text="Hi.", start_time=0.0, end_time=1.0,
+                          speaker=Speaker(id="SPEAKER_00", label=None)),
+    ])
+    assert "SPEAKER_00: Hi." in format_srt(doc)
+
+
 def test_write_helpers(tmp_path):
     write_srt(_doc(), tmp_path / "a.srt")
     write_vtt(_doc(), tmp_path / "a.vtt")
