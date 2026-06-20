@@ -39,10 +39,12 @@ def _install_gradio_client_bool_schema_patch() -> None:
     if getattr(original, "_bool_schema_safe", False):
         return
 
-    def _json_schema_to_python_type(schema, defs=None):
+    def _json_schema_to_python_type(schema, *args, **kwargs):
+        # *args/**kwargs passthrough: tolerate any future gradio_client signature
+        # change to this internal so the shim never silently breaks the call.
         if not isinstance(schema, dict):
             return "Any"
-        return original(schema, defs)
+        return original(schema, *args, **kwargs)
 
     _json_schema_to_python_type._bool_schema_safe = True
     _gradio_client_utils._json_schema_to_python_type = _json_schema_to_python_type
