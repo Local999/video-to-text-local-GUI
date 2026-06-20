@@ -153,6 +153,19 @@ def _run_transcription(file_path, model, language, do_cleanup, do_diarize, num_s
     )
 
 
+def _run_batch(file_paths, model, language, do_cleanup, do_diarize, num_speakers, progress=gr.Progress()):
+    if not file_paths:
+        raise gr.Error("Please upload at least one media file.")
+    paths = file_paths if isinstance(file_paths, list) else [file_paths]
+    last = ("", None, None, None, gr.update(), gr.update())
+    total = len(paths)
+    for i, p in enumerate(paths):
+        progress(i / total, desc=f"File {i + 1}/{total}: {Path(p).name}")
+        last = _run_transcription(p, model, language, do_cleanup, do_diarize, num_speakers, progress=progress)
+    progress(1.0, desc="Done")
+    return last
+
+
 def _load_selected(history_table, evt: gr.SelectData):
     # evt.index = [row, col]; first column is the id
     if evt is None or not history_table:
@@ -182,7 +195,8 @@ def build_ui() -> gr.Blocks:
             with gr.Row():
                 with gr.Column(scale=1):
                     file_in = gr.File(
-                        label="Upload audio/video",
+                        label="Upload audio/video (one or many)",
+                        file_count="multiple",
                         file_types=[".mp4", ".mov", ".avi", ".mkv", ".webm", ".mp3", ".m4a"],
                         type="filepath",
                     )
@@ -221,7 +235,7 @@ def build_ui() -> gr.Blocks:
             hist_file = gr.File(label="Download selected .txt")
 
         run_btn.click(
-            _run_transcription,
+            _run_batch,
             inputs=[file_in, model_in, lang_in, cleanup_in, diarize_in, speakers_in],
             outputs=[out_text, out_file, out_srt, out_vtt, out_clean, history_table],
         )
