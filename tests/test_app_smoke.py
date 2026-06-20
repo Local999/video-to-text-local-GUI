@@ -56,3 +56,32 @@ def test_get_api_info_tolerates_boolean_schema_nodes():
     info = demo.get_api_info()
     assert isinstance(info, dict)
     assert "named_endpoints" in info
+
+
+def test_run_batch_continues_after_file_failure(monkeypatch):
+    import gradio as gr
+    import app
+
+    called_paths = []
+    FAIL_PATH = "b.mp3"
+    GOOD_RETURN = ("t", "t.txt", None, None, gr.update(), gr.update())
+
+    def fake_run_transcription(file_path, model, language, do_cleanup, do_diarize, num_speakers, progress=None):
+        called_paths.append(file_path)
+        if file_path == FAIL_PATH:
+            raise gr.Error("boom")
+        return GOOD_RETURN
+
+    monkeypatch.setattr(app, "_run_transcription", fake_run_transcription)
+    monkeypatch.setattr(app.gr, "Warning", lambda *a, **k: None)
+
+    result = app._run_batch(
+        ["a.mp3", "b.mp3", "c.mp3"],
+        "base", "Auto-detect", False, False, None,
+        progress=lambda *a, **k: None,
+    )
+
+    assert called_paths == ["a.mp3", "b.mp3", "c.mp3"], (
+        "Expected _run_transcription called for all three files; got: " + str(called_paths)
+    )
+    assert isinstance(result, tuple) and len(result) == 6

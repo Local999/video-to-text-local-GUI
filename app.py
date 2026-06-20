@@ -152,7 +152,8 @@ def _run_transcription(file_path, model, language, do_cleanup, do_diarize, num_s
     clean_text = ""
     if result.clean_path and Path(result.clean_path).exists():
         clean_text = Path(result.clean_path).read_text(encoding="utf-8")
-    warn = gr.Warning(result.message) if result.status == "warning" and result.message else None  # noqa: F841
+    if result.status == "warning" and result.message:
+        gr.Warning(result.message)
     return (
         doc.full_text if doc else "",
         result.txt_path, result.srt_path, result.vtt_path,
@@ -167,11 +168,20 @@ def _run_batch(file_paths, model, language, do_cleanup, do_diarize, num_speakers
     paths = file_paths if isinstance(file_paths, list) else [file_paths]
     last = ("", None, None, None, gr.update(), gr.update())
     total = len(paths)
+    failures = 0
     for i, p in enumerate(paths):
         progress(i / total, desc=f"File {i + 1}/{total}: {Path(p).name}")
-        last = _run_transcription(p, model, language, do_cleanup, do_diarize, num_speakers, progress=progress)
+        try:
+            last = _run_transcription(p, model, language, do_cleanup, do_diarize, num_speakers, progress=progress)
+        except gr.Error as exc:
+            failures += 1
+            gr.Warning(f"{Path(p).name}: {exc}")
+            continue
     progress(1.0, desc="Done")
-    return last
+    if failures and total > 1:
+        gr.Warning(f"{failures} of {total} file(s) failed; the rest completed.")
+    text, txt, srt, vtt, clean_update, _hist = last
+    return (text, txt, srt, vtt, clean_update, gr.update(value=_history_rows()))
 
 
 def _load_selected(history_table, evt: gr.SelectData):
