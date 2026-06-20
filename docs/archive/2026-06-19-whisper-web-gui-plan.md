@@ -1,3 +1,9 @@
+> **Archived 2026-06-21 by `/curate`.** This implementation plan is complete and
+> shipped; the code in `app.py`, `src/service.py`, `src/history.py`,
+> `src/utils/naming.py`, and `src/pipeline/`/`src/transcription/` is authoritative.
+> Kept for historical context. Do not implement from it — the unchecked checkboxes,
+> embedded source copies, and test counts reflect the original plan, not current state.
+
 # Local Whisper Web GUI — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

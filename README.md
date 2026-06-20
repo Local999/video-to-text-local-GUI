@@ -25,22 +25,30 @@ This project transcribes media using a locally hosted Whisper model, then option
 .
 ├── audios/                     # Input audio files or extracted audio
 ├── videos/                     # Input videos when running with --type video
-├── transcripts/                # Transcription outputs (created automatically)
+├── transcripts/                # Transcription outputs + GUI history (created automatically)
 ├── logs/                       # Runtime logs
 ├── configurations/
 │   ├── general_config.yaml     # Runtime paths, extensions, logging, and service settings
 │   ├── params.yaml             # Whisper model and cleanup settings
-│   └── prompts.yaml            # Cleanup prompt for Ollama
+│   ├── prompts.yaml            # Cleanup prompt for Ollama
+│   └── diarization.yaml        # Speaker-diarization backend settings
 ├── src/
+│   ├── service.py              # Shared CLI+GUI seam: transcribe_file() (one file, per-job params)
+│   ├── history.py              # GUI transcription-history index
 │   ├── ingestion/              # Media discovery and audio extraction from video
-│   ├── transcription/          # Whisper ASR engine + pyannote diarization
+│   ├── transcription/          # Whisper ASR + pyannote diarization (diarizer, backends, alignment, audio prep)
 │   ├── processing/             # Ollama cleanup
-│   ├── output/                 # Transcript formatting and file writing
-│   ├── pipeline/               # Step orchestrator and pipeline steps
+│   ├── output/                 # Transcript formatting and file writing (txt, srt, vtt)
+│   ├── pipeline/               # Step orchestrator and pipeline steps (incl. diarization step)
 │   ├── models/                 # Dataclasses (transcript document, segments, context)
-│   └── utils/                  # CLI parsing, config, device, logging, errors
+│   └── utils/                  # CLI parsing, config, device, logging, errors, ffmpeg, naming, progress
+├── tests/                      # pytest suite
+├── main.py                     # CLI entrypoint
+├── app.py                      # Local web GUI (Gradio) entrypoint
+├── transcribe                  # Convenience wrapper script (macOS/Linux)
 ├── requirements.txt
-├── main.py                     # Root orchestrator entrypoint
+├── requirements-gui.txt        # Extra dependencies for the web GUI
+├── .env.example                # Template for secrets (HF_TOKEN); copy to .env
 ├── Dockerfile                  # Container image definition
 └── .dockerignore
 ```
@@ -214,9 +222,12 @@ Diarization uses `pyannote.audio` and requires a HuggingFace access token. The p
 python main.py --type audio --diarize
 ```
 
-> Each developer must use their own personal HF token. The `.env` file is gitignored — never commit it. A shell-exported `HF_TOKEN` (or one set at the OS level) still takes precedence over the `.env`, which is useful for CI/CD.
+Diarization flags:
+- `--diarize` — enable diarization (overrides `diarization.enabled` in config).
+- `--no-diarize` — disable it even if enabled in config (mutually exclusive with `--diarize`).
+- `--num-speakers N` — pin the exact number of speakers (optional; auto-detected otherwise).
 
-**Detailed guide** (installation, HF token, config, CLI, Docker, troubleshooting): [docs/diarization.md](docs/diarization.md).
+> Each developer must use their own personal HF token. The `.env` file is gitignored — never commit it. A shell-exported `HF_TOKEN` (or one set at the OS level) still takes precedence over the `.env`, which is useful for CI/CD.
 
 **Supported extensions:**
 - Videos: `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`

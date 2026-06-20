@@ -1,3 +1,10 @@
+> **Archived 2026-06-21 by `/curate`.** The web GUI this spec designs has shipped:
+> `app.py`, `src/service.py`, `src/history.py`, and the `src/pipeline/` +
+> `src/transcription/` modules are now authoritative. Kept for its design rationale
+> (rejected alternatives, dependency constraints). Historical — do not implement from
+> it; the Status, branch/commit, and test counts reflect the original spec, not the
+> current state.
+
 # Design Spec — Local Web GUI for Whisper Transcription
 
 - **Date:** 2026-06-19
