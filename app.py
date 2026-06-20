@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import gradio_client.utils as _gradio_client_utils
 
 from src.history import HistoryEntry, HistoryStore
 from src.service import transcribe_file
+from src.transcription.diarization_config import load_diarization_config
 from src.utils import MediaDecodeError, ProcessingError, load_yaml_file, setup_logging
 
 
@@ -62,6 +64,9 @@ _transcripts_dir = Path(_cfg["paths"]["transcripts"])
 _default_model = load_yaml_file(_cfg["files"]["params"])["transcription_model"]
 _history = HistoryStore(_transcripts_dir / ".history.json")
 
+_diar_cfg = load_diarization_config(_cfg["files"]["diarization"])
+_HF_TOKEN_PRESENT = bool(os.environ.get(_diar_cfg.hf_token_env, "").strip())
+
 logger = setup_logging(
     logs_dir=_cfg["paths"]["logs"],
     level=_cfg["logging"]["level"],
@@ -106,49 +111,46 @@ def _make_monotonic_progress(progress_fn, desc: str = "Transcribing…"):
     return _cb
 
 
-def _run_transcription(file_path, model, language, progress=gr.Progress()):
+def _run_transcription(file_path, model, language, do_cleanup, do_diarize, num_speakers, progress=gr.Progress()):
     if not file_path:
         raise gr.Error("Please upload a media file first.")
     lang = None if language == "Auto-detect" else language
+    n_speakers = int(num_speakers) if num_speakers else None
     progress(0.0, desc="Starting…")
     safe_progress = _make_monotonic_progress(progress)
     try:
         result = transcribe_file(
-            file_path,
-            model=model,
-            language=lang,
-            sanitize_output=True,
-            config_path=CONFIG_PATH,
-            logger=logger,
+            file_path, model=model, language=lang,
+            cleanup=bool(do_cleanup), diarize=bool(do_diarize), num_speakers=n_speakers,
+            write_srt_vtt=True, sanitize_output=True, config_path=CONFIG_PATH, logger=logger,
             progress_callback=safe_progress,
         )
     except MediaDecodeError as exc:
         raise gr.Error(str(exc))
     except ProcessingError as exc:
         raise gr.Error(f"Processing failed: {exc}")
-
     if result.status == "failed":
         raise gr.Error(result.message or "Transcription failed.")
 
     doc = result.document
-    _history.add(
-        HistoryEntry(
-            id=doc.id,
-            source_filename=Path(file_path).name,
-            model=result.model,
-            language=result.language,
-            options=result.options,
-            duration_seconds=doc.duration_seconds,
-            word_count=len((doc.full_text or "").split()),
-            created_at=doc.created_at.isoformat(),
-            status=result.status,
-            outputs={"txt": result.txt_path, "clean": result.clean_path,
-                     "srt": result.srt_path, "vtt": result.vtt_path},
-            message=result.message,
-        )
+    _history.add(HistoryEntry(
+        id=doc.id, source_filename=Path(file_path).name, model=result.model, language=result.language,
+        options=result.options, duration_seconds=doc.duration_seconds,
+        word_count=len((doc.full_text or "").split()), created_at=doc.created_at.isoformat(),
+        status=result.status,
+        outputs={"txt": result.txt_path, "clean": result.clean_path, "srt": result.srt_path, "vtt": result.vtt_path},
+        message=result.message,
+    ))
+    clean_text = ""
+    if result.clean_path and Path(result.clean_path).exists():
+        clean_text = Path(result.clean_path).read_text(encoding="utf-8")
+    warn = gr.Warning(result.message) if result.status == "warning" and result.message else None  # noqa: F841
+    return (
+        doc.full_text if doc else "",
+        result.txt_path, result.srt_path, result.vtt_path,
+        gr.update(value=clean_text, visible=bool(clean_text)),
+        gr.update(value=_history_rows()),
     )
-    text = doc.full_text if doc else ""
-    return text, result.txt_path, gr.update(value=_history_rows())
 
 
 def _load_selected(history_table, evt: gr.SelectData):
@@ -189,10 +191,23 @@ def build_ui() -> gr.Blocks:
                         info="Bigger = more accurate but slower on CPU. large-v3 downloads ~3 GB on first use.",
                     )
                     lang_in = gr.Dropdown(LANGUAGE_CHOICES, value="Auto-detect", label="Language")
+                    cleanup_in = gr.Checkbox(label="Clean up with Ollama", value=False,
+                                             info="Requires a local Ollama server. Raw transcript is kept if unavailable.")
+                    diarize_in = gr.Checkbox(
+                        label="Speaker diarization", value=False,
+                        interactive=_HF_TOKEN_PRESENT,
+                        info=("Identifies speakers (needs HF_TOKEN)."
+                              if _HF_TOKEN_PRESENT else
+                              "Disabled: set HF_TOKEN in .env to enable (see README)."),
+                    )
+                    speakers_in = gr.Number(label="Exact #speakers (optional)", value=None, precision=0)
                     run_btn = gr.Button("Transcribe", variant="primary")
                 with gr.Column(scale=2):
                     out_text = gr.Textbox(label="Transcript", lines=18, show_copy_button=True)
                     out_file = gr.File(label="Download .txt")
+                    out_clean = gr.Textbox(label="Cleaned transcript", lines=10, show_copy_button=True, visible=False)
+                    out_srt = gr.File(label="Download .srt")
+                    out_vtt = gr.File(label="Download .vtt")
 
         with gr.Tab("History"):
             with gr.Row():
@@ -207,8 +222,8 @@ def build_ui() -> gr.Blocks:
 
         run_btn.click(
             _run_transcription,
-            inputs=[file_in, model_in, lang_in],
-            outputs=[out_text, out_file, history_table],
+            inputs=[file_in, model_in, lang_in, cleanup_in, diarize_in, speakers_in],
+            outputs=[out_text, out_file, out_srt, out_vtt, out_clean, history_table],
         )
         refresh_btn.click(lambda: gr.update(value=_history_rows()), outputs=history_table)
         history_table.select(_load_selected, inputs=[history_table], outputs=[hist_text, hist_file])
