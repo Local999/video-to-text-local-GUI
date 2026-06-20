@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -27,6 +28,23 @@ def _get_audio_duration_seconds(audio_path: str) -> float | None:
             return float(clip.duration) if clip.duration else None
     except Exception:
         return None
+
+
+def _estimate_fraction(elapsed_seconds: float, total_seconds: float) -> float:
+    """Return a smooth, honest 0.0-1.0 progress estimate for a Whisper run.
+
+    Whisper's blocking ``transcribe()`` exposes no real progress signal, and on
+    CPU it runs slower than realtime. The naive ``elapsed / audio_duration``
+    estimate therefore reached 1.0 (100%) at the 1x-realtime mark and then sat
+    there for the rest of the decode. Instead use ``elapsed / (elapsed +
+    duration)``, which rises quickly early, slows as it goes, and asymptotically
+    approaches -- but never reaches -- 1.0, so the bar always shows forward
+    motion and only the real completion (the ``finally`` 1.0) marks the run
+    done. Capped at 0.99 as a float-safety floor strictly below 1.0.
+    """
+    if total_seconds <= 0 or elapsed_seconds <= 0:
+        return 0.0
+    return min(elapsed_seconds / (elapsed_seconds + total_seconds), 0.99)
 
 
 def transcribe_audio(
@@ -64,7 +82,7 @@ def transcribe_audio(
                 pbar.n = current
                 pbar.refresh()
             if progress_callback is not None:
-                progress_callback(min(elapsed / total_seconds, 1.0))
+                progress_callback(_estimate_fraction(elapsed, total_seconds))
             time.sleep(progress_update_interval_seconds)
         pbar.n = pbar.total
         pbar.refresh()
@@ -72,7 +90,16 @@ def transcribe_audio(
 
     thread: threading.Thread | None = None
     if total_seconds and total_seconds > 0:
-        thread = threading.Thread(target=_run_progress_bar, daemon=True)
+        # Run the ticker inside a COPY of the current context so it inherits the
+        # caller's ContextVars. Gradio's gr.Progress reads request-scoped
+        # ContextVars (blocks + event_id) on every call; a raw threading.Thread
+        # does NOT inherit them, so ticker-thread progress updates would be
+        # silently dropped (only the main-thread finally(1.0) would land).
+        # copy_context() captures the handler thread's vars here and ctx.run()
+        # applies them inside the ticker thread. Harmless when no relevant vars
+        # are set (e.g. the CLI, where progress_callback is None).
+        ctx = contextvars.copy_context()
+        thread = threading.Thread(target=lambda: ctx.run(_run_progress_bar), daemon=True)
         thread.start()
     else:
         logger.debug("Could not estimate media duration for progress bar: %s", audio_path)

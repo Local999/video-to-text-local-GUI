@@ -125,3 +125,82 @@ class TestProgressAndLanguage:
         )
         _, kwargs = model.transcribe.call_args
         assert "language" not in kwargs  # no language kwarg passed at all
+
+
+class TestProgressEstimateAndContext:
+    """Covers the two-fold progress-bar fix (follow-up 'A')."""
+
+    def test_estimate_fraction_is_honest_and_asymptotic(self):
+        # fold 1: the wallclock heuristic must NOT pin at 100% once wallclock
+        # passes audio duration (the old `min(elapsed/total, 1.0)` returned 1.0
+        # at elapsed==total, i.e. the 1x-realtime mark, then sat there).
+        from src.transcription.asr_engine import _estimate_fraction
+
+        assert _estimate_fraction(0.0, 60.0) == 0.0
+        assert _estimate_fraction(-5.0, 60.0) == 0.0  # never negative
+        assert _estimate_fraction(5.0, 0.0) == 0.0  # unknown/zero duration guard
+        # elapsed == audio duration: old formula gave 1.0 (the bug); new gives 0.5
+        assert _estimate_fraction(60.0, 60.0) == 0.5
+        assert _estimate_fraction(180.0, 60.0) == 0.75
+        # strictly monotonic increasing in elapsed
+        xs = [_estimate_fraction(e, 60.0) for e in (1, 10, 60, 120, 600)]
+        assert xs == sorted(xs) and len(set(xs)) == len(xs)
+        # asymptotic: approaches but NEVER reaches 1.0, even for absurd elapsed
+        assert _estimate_fraction(1e9, 60.0) < 1.0
+        assert _estimate_fraction(1e9, 60.0) <= 0.99
+
+    def test_progress_callback_runs_in_copied_context(self, monkeypatch):
+        """fold 2: the ticker thread must inherit the handler thread's
+        contextvars (via copy_context) so Gradio's gr.Progress -- which reads
+        LocalContext.blocks/event_id ContextVars -- actually delivers
+        ticker-thread updates instead of silently dropping them. A raw
+        threading.Thread does NOT inherit contextvars, so without the fix the
+        ticker sees the default sentinel value, not the handler thread's.
+
+        Deterministic by construction: the fake transcribe blocks until the
+        ticker has fired at least once (gated on a threading.Event the callback
+        sets), so the assertion never races thread scheduling. The timeout is a
+        safety net, not a timing assumption -- if the ticker never fires the
+        test fails on the empty-list assert rather than hanging or flaking.
+        """
+        import contextvars
+        import threading
+
+        monkeypatch.setattr(
+            "src.transcription.asr_engine._get_audio_duration_seconds", lambda p: 10.0
+        )
+        sentinel = contextvars.ContextVar("sentinel_asr_test", default="UNSET")
+        sentinel.set("MAIN")
+        main_thread = threading.current_thread()
+        ticker_fired = threading.Event()
+        ticker_views: list[str] = []
+
+        def cb(_frac):
+            # record ONLY ticker-thread observations (ignore the main-thread
+            # finally(1.0) call, which trivially sees "MAIN")
+            if threading.current_thread() is not main_thread:
+                ticker_views.append(sentinel.get())
+                ticker_fired.set()
+
+        model = MagicMock()
+
+        def slow_transcribe(*_a, **_k):
+            # Block until the ticker has fired once, so the observation below is
+            # guaranteed without relying on wallclock sleeps / scheduling luck.
+            ticker_fired.wait(timeout=5.0)
+            return {"text": "hi", "segments": [], "language": "en"}
+
+        model.transcribe.side_effect = slow_transcribe
+        transcribe_audio(
+            model=model,
+            audio_path=Path("/tmp/nope.mp3"),
+            language="en",
+            progress_update_interval_seconds=0.01,
+            logger=logging.getLogger("t"),
+            progress_callback=cb,
+        )
+        assert ticker_views, "ticker thread should have called progress_callback at least once"
+        assert all(v == "MAIN" for v in ticker_views), (
+            f"ticker thread must run inside a copied context; saw {set(ticker_views)} "
+            "(raw threads do NOT inherit contextvars -> Gradio progress is a no-op)"
+        )
