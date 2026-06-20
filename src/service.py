@@ -98,9 +98,10 @@ class TranscribeResult:
 
 def _resolve_device(logger: logging.Logger) -> str:
     global _device_cache
-    if _device_cache is None:
-        _device_cache = select_device(logger)
-    return _device_cache
+    with _MODEL_LOCK:
+        if _device_cache is None:
+            _device_cache = select_device(logger)
+        return _device_cache
 
 
 def get_diarization_backend(config, device: str, logger: logging.Logger):
@@ -133,6 +134,10 @@ def transcribe_file(
 
     `params.yaml` is never mutated: `model`/`language`/`cleanup`/`diarize` are
     arguments. The same function backs both the CLI and the GUI.
+
+    Note: ``write_srt_vtt`` and the ``srt_path``/``vtt_path`` result fields are
+    placeholders wired up in a later task (SRT/VTT output); in the current code
+    they have no effect and the paths remain ``None``.
     """
     source_path = Path(source_path)
     logger = logger or logging.getLogger("video_to_text")
