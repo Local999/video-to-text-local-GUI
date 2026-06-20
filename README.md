@@ -227,6 +227,19 @@ python main.py --type audio --diarize
 - Cleaned transcript: `<name>_clean.txt` (via Ollama, only with `--cleanup`)
 - Logs: `logs/transcriber.log`
 
+## Web GUI (local)
+
+A local, single-user web interface (Gradio) for uploading a file, picking model
++ language, transcribing with live progress, and browsing history.
+
+```bash
+pip install -r requirements-gui.txt   # one-time, after requirements.txt
+python app.py                          # opens http://127.0.0.1:7860
+```
+
+The GUI reuses the same engine as the CLI; transcripts and the history index
+live in `transcripts/`. It binds to `127.0.0.1` only (no network exposure).
+
 ## Run with Docker
 
 The provided `Dockerfile` bundles all dependencies. Note that default Docker setup uses CPU.

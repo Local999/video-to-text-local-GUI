@@ -31,6 +31,11 @@ python main.py --type audio --language en
 - **Model:** `configurations/params.yaml` → `transcription_model` (currently `large-v3`).
   Options: `tiny | base | small | medium | large-v3` — bigger = more accurate but slower on CPU.
 
+## Web GUI (optional)
+
+Prefer a browser? `pip install -r requirements-gui.txt` then `python app.py`
+and open http://127.0.0.1:7860 — upload, pick a model, transcribe, download.
+
 ## Notes
 
 - This Mac has no NVIDIA GPU, so transcription runs on **CPU**. The first run of a given
