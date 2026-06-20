@@ -77,6 +77,14 @@ logger = setup_logging(
 _HISTORY_COLUMNS = ["id", "file", "model", "language", "duration (s)", "words", "date", "status"]
 
 
+def _log_tail(n: int = 25) -> str:
+    log_path = Path(_cfg["paths"]["logs"]) / _cfg["logging"]["file_name"]
+    if not log_path.exists():
+        return ""
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-n:])
+
+
 def _history_rows(records=None) -> list[list]:
     records = _history.list() if records is None else records
     rows = []
@@ -130,7 +138,7 @@ def _run_transcription(file_path, model, language, do_cleanup, do_diarize, num_s
     except ProcessingError as exc:
         raise gr.Error(f"Processing failed: {exc}")
     if result.status == "failed":
-        raise gr.Error(result.message or "Transcription failed.")
+        raise gr.Error((result.message or "Transcription failed.") + "\n\n--- recent log ---\n" + _log_tail())
 
     doc = result.document
     _history.add(HistoryEntry(
@@ -200,6 +208,7 @@ def build_ui() -> gr.Blocks:
                         file_types=[".mp4", ".mov", ".avi", ".mkv", ".webm", ".mp3", ".m4a"],
                         type="filepath",
                     )
+                    media_preview = gr.Audio(label="Preview (current upload)", visible=False)
                     model_in = gr.Dropdown(
                         MODEL_CHOICES, value=_default_model, label="Model",
                         info="Bigger = more accurate but slower on CPU. large-v3 downloads ~3 GB on first use.",
@@ -244,6 +253,14 @@ def build_ui() -> gr.Blocks:
         history_table.select(_load_selected, inputs=[history_table], outputs=[hist_text, hist_file])
         del_btn.click(_delete_selected, inputs=[del_id], outputs=[history_table])
         search_in.change(lambda q: gr.update(value=_history_rows(_history.search(q))), inputs=search_in, outputs=history_table)
+
+        def _show_media(paths):
+            p = paths[0] if isinstance(paths, list) and paths else paths
+            if p and Path(p).suffix.lower() in {".mp3", ".m4a"}:
+                return gr.update(value=p, visible=True)
+            return gr.update(visible=False)
+
+        file_in.change(_show_media, inputs=file_in, outputs=media_preview)
 
     return demo
 
