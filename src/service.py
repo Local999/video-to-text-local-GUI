@@ -24,7 +24,13 @@ from src.pipeline import (
 from src.processing import cleanup_with_ollama
 from src.transcription.diarization_config import load_diarization_config
 from src.transcription.diarizer import create_diarization_backend
-from src.utils import MediaDecodeError, load_yaml_file, select_device
+from src.utils import (
+    MediaDecodeError,
+    ensure_ffmpeg_available,
+    ensure_ffmpeg_on_path,
+    load_yaml_file,
+    select_device,
+)
 from src.utils.naming import build_output_basename, sanitize_stem
 
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
@@ -147,6 +153,15 @@ def transcribe_file(
     ollama = cfg["ollama"]
     processing = cfg["processing"]
     dependencies = cfg["dependencies"]
+
+    # ffmpeg pre-flight (the shared CLI+GUI seam). Whisper's load_audio shells
+    # out to a bare `ffmpeg`; without this the GUI died deep in the pipeline
+    # with FileNotFoundError. Provision the bundled imageio-ffmpeg binary if no
+    # system ffmpeg exists, then verify -- raising a clear, actionable
+    # ProcessingError (surfaced by app.py) when ffmpeg is genuinely unavailable
+    # instead of letting transcription fail mid-run.
+    ensure_ffmpeg_on_path(logger)
+    ensure_ffmpeg_available(dependencies["ffmpeg_executable"], logger)
 
     transcripts_dir = Path(paths["transcripts"])
     transcripts_dir.mkdir(parents=True, exist_ok=True)
