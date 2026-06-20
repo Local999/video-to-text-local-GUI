@@ -66,10 +66,6 @@ def test_output_step_writes_clean_when_present(tmp_path):
 
 
 def test_output_step_writes_srt_vtt_when_enabled(tmp_path):
-    import logging
-    from src.models import PipelineContext, TranscriptDocument, TranscriptSegment
-    from src.pipeline import OutputStep
-
     doc = TranscriptDocument(segments=[TranscriptSegment(text="hi", start_time=0.0, end_time=1.0)])
     ctx = PipelineContext(source_path=tmp_path / "c.mp3", input_type="audio", document=doc)
     OutputStep(tmp_path, ".txt", "_clean", output_basename="c__base", write_srt_vtt=True).execute(
@@ -78,3 +74,4 @@ def test_output_step_writes_srt_vtt_when_enabled(tmp_path):
     assert (tmp_path / "c__base.srt").exists()
     assert (tmp_path / "c__base.vtt").exists()
     assert ctx.document.metadata["outputs"]["srt"] == str(tmp_path / "c__base.srt")
+    assert ctx.document.metadata["outputs"]["vtt"] == str(tmp_path / "c__base.vtt")

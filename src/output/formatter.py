@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 from src.models import TranscriptDocument, TranscriptSegment
@@ -62,7 +63,7 @@ def _format_timestamp(seconds: float, *, sep: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}{sep}{millis:03d}"
 
 
-def _timed_segments(document: TranscriptDocument):
+def _timed_segments(document: TranscriptDocument) -> Iterator[tuple[float, float, str]]:
     for seg in document.segments:
         if seg.start_time is None or seg.end_time is None:
             continue

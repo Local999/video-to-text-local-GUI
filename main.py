@@ -49,7 +49,6 @@ def orchestrate() -> None:
     paths = general_config["paths"]
     files = general_config["files"]
     output = general_config["output"]
-    processing_cfg = general_config["processing"]  # noqa: F841 (kept for parity/readability)
     dependencies = general_config["dependencies"]
     logging_config = general_config["logging"]
 

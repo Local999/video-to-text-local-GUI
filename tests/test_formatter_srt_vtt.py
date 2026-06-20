@@ -46,3 +46,11 @@ def test_write_helpers(tmp_path):
     write_vtt(_doc(), tmp_path / "a.vtt")
     assert (tmp_path / "a.srt").read_text(encoding="utf-8").startswith("1")
     assert (tmp_path / "a.vtt").read_text(encoding="utf-8").startswith("WEBVTT")
+
+
+def test_empty_document_srt_vtt_asymmetry():
+    # Intentional: an empty SRT is legitimately empty, but a valid empty VTT
+    # must still carry its WEBVTT header. Do NOT "fix" these to match.
+    doc = TranscriptDocument(segments=[TranscriptSegment(text="no times")])
+    assert format_srt(doc) == ""
+    assert format_vtt(doc) == "WEBVTT\n"
