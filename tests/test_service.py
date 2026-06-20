@@ -114,6 +114,8 @@ class TestTranscribeFile:
         # ProcessingError (which app.py surfaces as a clean gr.Error) instead of
         # letting whisper die mid-pipeline with FileNotFoundError -- which, with
         # the broken traceback-logging landmine, left the GUI pinned at 100%.
+        from unittest.mock import Mock
+
         import pytest
 
         from src.utils import ProcessingError
@@ -122,8 +124,10 @@ class TestTranscribeFile:
         cfg = _tmp_config(tmp_path)
         src_audio = tmp_path / "clip.mp3"
         src_audio.write_bytes(b"x")
-        # Provisioning finds no bundled binary...
-        monkeypatch.setattr(service, "ensure_ffmpeg_on_path", lambda *a, **k: None)
+        # Provisioning finds no bundled binary... (Mock so we can prove the seam
+        # actually ran the pre-flight -- the whole point of the fix.)
+        fake_on_path = Mock(return_value=None)
+        monkeypatch.setattr(service, "ensure_ffmpeg_on_path", fake_on_path)
         # ...and there is no system ffmpeg on PATH either.
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -131,6 +135,8 @@ class TestTranscribeFile:
 
         with pytest.raises(ProcessingError, match="ffmpeg"):
             service.transcribe_file(src_audio, model="base", language="en", config_path=cfg)
+
+        fake_on_path.assert_called_once()  # the seam ran the ffmpeg pre-flight
 
     def test_cleanup_failure_keeps_raw_and_warns(self, monkeypatch, tmp_path):
         self._patch(monkeypatch)

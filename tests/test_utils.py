@@ -117,3 +117,73 @@ class TestEnsureFfmpegOnPath:
 
         assert result is None  # caller surfaces a clear ProcessingError
         assert os.environ["PATH"] == before  # no mutation on failure
+
+    def test_windows_uses_exe_name_and_copy_fallback(self, monkeypatch, tmp_path):
+        # Two Windows realities at once: (1) subprocess/shutil.which only resolve
+        # names whose extension is in PATHEXT, so a bare ``ffmpeg`` shim is
+        # invisible to whisper's subprocess.run(["ffmpeg", ...]) -- it MUST be
+        # ``ffmpeg.exe``; (2) os.symlink needs SeCreateSymbolicLinkPrivilege,
+        # which a normal (non-admin, no Developer Mode) user lacks, so symlinking
+        # raises and provisioning must fall back to copying the self-contained
+        # ffmpeg binary. Without both, the bundled-ffmpeg auto-provision is
+        # silently broken on stock Windows.
+        bundled = self._fake_binary(tmp_path / "ffmpeg-bundled")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", lambda: str(bundled))
+        monkeypatch.setattr("src.utils.system.sys.platform", "win32")
+
+        def no_symlink_privilege(self, target):
+            raise OSError("[WinError 1314] A required privilege is not held by the client")
+
+        monkeypatch.setattr(Path, "symlink_to", no_symlink_privilege)
+        shim_dir = tmp_path / "shim"
+
+        result = ensure_ffmpeg_on_path(shim_dir=shim_dir)
+
+        shim = shim_dir / "ffmpeg.exe"  # PATHEXT-resolvable name
+        assert result == str(shim)
+        assert shim.is_file() and not shim.is_symlink()  # a real copy, not a link
+        assert shim.read_bytes() == bundled.read_bytes()  # the actual ffmpeg binary
+        # shim dir prepended so a bare `ffmpeg` (-> ffmpeg.exe on Windows) resolves
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(shim_dir)
+
+    def test_returns_none_when_bundled_path_does_not_exist(self, monkeypatch, tmp_path):
+        # imageio-ffmpeg can report a binary path that isn't actually present
+        # (e.g. an interrupted download). Treat that as "no bundled ffmpeg":
+        # return None (caller raises a clear ProcessingError) and never put a
+        # dangling path on PATH.
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        before = os.environ["PATH"]
+        ghost = tmp_path / "does-not-exist-ffmpeg"  # path returned but missing
+        monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", lambda: str(ghost))
+
+        result = ensure_ffmpeg_on_path(shim_dir=tmp_path / "shim")
+
+        assert result is None
+        assert os.environ["PATH"] == before  # no mutation on failure
+
+    def test_returns_none_when_shim_cannot_be_provisioned(self, monkeypatch, tmp_path):
+        # A real bundled binary exists, but the shim can't be created (e.g. the
+        # cache dir isn't writable). Provisioning fails closed: return None and
+        # leave PATH untouched so the caller surfaces the install guidance
+        # instead of half-wiring a broken shim onto PATH.
+        bundled = self._fake_binary(tmp_path / "ffmpeg-bundled")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        before = os.environ["PATH"]
+        monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", lambda: str(bundled))
+
+        def cannot_mkdir(self, *a, **k):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(Path, "mkdir", cannot_mkdir)
+
+        result = ensure_ffmpeg_on_path(shim_dir=tmp_path / "shim")
+
+        assert result is None
+        assert os.environ["PATH"] == before  # no mutation on failure

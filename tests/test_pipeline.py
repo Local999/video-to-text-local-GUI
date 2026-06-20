@@ -123,6 +123,7 @@ class TestPipelineOrchestrator:
 
             def __init__(self):
                 self.error_calls = []
+                self.exception_attempted = False
 
             def info(self, *a, **k):
                 pass
@@ -131,6 +132,7 @@ class TestPipelineOrchestrator:
                 pass
 
             def exception(self, *a, **k):
+                self.exception_attempted = True
                 raise ImportError(
                     "Lazy import of LazyModule(...speechbrain...k2_fsa) failed"
                 )
@@ -152,7 +154,11 @@ class TestPipelineOrchestrator:
         assert isinstance(result.exception, RuntimeError)
         assert "Intentional failure" in str(result.exception)
         assert len(result.errors) == 1 and "Intentional failure" in result.errors[0]
-        # It fell back to the traceback-free logger.error path, not an escape.
+        # It tried the full-traceback exception() path FIRST (the useful one),
+        # then fell back to the traceback-free logger.error path -- not an escape,
+        # and not skipping straight to error() (which would lose tracebacks when
+        # logging works normally).
+        assert logger.exception_attempted
         assert logger.error_calls
         # The pipeline still stopped: the step after the failure never ran.
         after.execute.assert_not_called()
