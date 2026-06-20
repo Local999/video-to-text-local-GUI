@@ -35,6 +35,7 @@ from src.utils import (
     ProcessingError,
     ensure_directories,
     ensure_ffmpeg_available,
+    ensure_ffmpeg_on_path,
     load_yaml_file,
     parse_cli_args,
     setup_logging,
@@ -67,6 +68,9 @@ def orchestrate() -> None:
     transcript_extension = output["transcript_extension"]
 
     ensure_directories([audios_path, transcripts_folder], logger)
+    # Provision the bundled imageio-ffmpeg binary when no system ffmpeg exists,
+    # so the pre-flight check below passes without a separate install.
+    ensure_ffmpeg_on_path(logger)
     ensure_ffmpeg_available(dependencies["ffmpeg_executable"], logger)
 
     args = parse_cli_args(videos_path, audios_path, cleaned_suffix, transcript_extension)
