@@ -240,6 +240,21 @@ python app.py                          # opens http://127.0.0.1:7860
 The GUI reuses the same engine as the CLI; transcripts and the history index
 live in `transcripts/`. It binds to `127.0.0.1` only (no network exposure).
 
+**GUI features:**
+
+- **Subtitle downloads** — every job also produces timestamped `.srt` and `.vtt`
+  files, downloadable next to the `.txt`.
+- **Optional cleanup** — tick *Clean up with Ollama* to post-process the
+  transcript with a local Ollama model. If Ollama is unavailable the job still
+  finishes and keeps the raw transcript (you get a warning, not a failure).
+- **Optional diarization** — tick *Speaker diarization* to label speakers. It
+  requires a HuggingFace token (`HF_TOKEN` in `.env`); without one the checkbox
+  is disabled with a hint. You can optionally pin the exact number of speakers.
+- **Batch upload** — drop in one or many files at once; they transcribe one at a
+  time (the queue serializes jobs) and each lands in History.
+- **History search** — filter the history table live by filename or date.
+- **Audio preview** — uploaded `.mp3`/`.m4a` files get an inline player.
+
 ## Run with Docker
 
 The provided `Dockerfile` bundles all dependencies. Note that default Docker setup uses CPU.
