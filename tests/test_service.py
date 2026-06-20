@@ -128,6 +128,102 @@ class TestTranscribeFile:
         assert Path(result.txt_path).exists()        # raw transcript saved
         assert result.clean_path is None
 
+    def test_diarize_backend_failure_keeps_transcript_and_warns(self, monkeypatch, tmp_path):
+        # Backend creation (model load / HF auth) failing must degrade to a
+        # warning with the raw transcript saved -- not raise out of
+        # transcribe_file. Mirror of test_cleanup_failure_keeps_raw_and_warns
+        # for the diarization eager-load failure point.
+        from unittest.mock import MagicMock
+
+        self._patch(monkeypatch)
+        cfg = _tmp_config(tmp_path)
+        src_audio = tmp_path / "clip.mp3"
+        src_audio.write_bytes(b"x")
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
+        # diarization config loads fine, but constructing the backend blows up
+        monkeypatch.setattr(service, "load_diarization_config", lambda path: MagicMock(enabled=False))
+
+        def boom(*a, **k):
+            raise RuntimeError("HF auth failed / model download blocked")
+
+        monkeypatch.setattr(service, "get_diarization_backend", boom)
+
+        result = service.transcribe_file(
+            src_audio, model="base", language="en", diarize=True,
+            config_path=cfg, sanitize_output=True,
+        )
+        assert result.status == "warning"  # degraded, not failed
+        assert Path(result.txt_path).exists()  # raw transcript still saved
+        # Durable proof diarization didn't run: no diarization metadata, no
+        # speakers. (pipeline_state is EXPORTED here -- OutputStep clobbers it.)
+        assert result.document.metadata.get("diarization") is None
+        assert not result.document.speakers
+        blob = " ".join(result.warnings + [result.message or ""]).lower()
+        assert "diar" in blob
+
+    def test_successful_diarization_reports_success(self, monkeypatch, tmp_path):
+        # Regression guard: a SUCCESSFUL diarization must report status
+        # "success", not a false "warning". The degradation signal keys on
+        # metadata["diarization"] (written only on success, durable across
+        # OutputStep), NOT on pipeline_state (which OutputStep clobbers to
+        # EXPORTED regardless -- so a state-based check would warn even on
+        # success).
+        from unittest.mock import MagicMock
+
+        self._patch(monkeypatch)
+        cfg = _tmp_config(tmp_path)
+        src_audio = tmp_path / "clip.mp3"
+        src_audio.write_bytes(b"x")
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
+        monkeypatch.setattr(service, "load_diarization_config", lambda path: MagicMock(enabled=False))
+        monkeypatch.setattr(service, "get_diarization_backend", lambda *a, **k: object())
+
+        def fake_diarize(*, document, **kwargs):
+            document.pipeline_state = PipelineState.DIARIZED
+            document.metadata["diarization"] = {"backend": "mock", "num_speakers_detected": 2}
+            return document
+
+        monkeypatch.setattr("src.pipeline.steps_diarization.diarize_document", fake_diarize)
+
+        result = service.transcribe_file(
+            src_audio, model="base", language="en", diarize=True,
+            config_path=cfg, sanitize_output=True,
+        )
+        assert result.status == "success"  # no false warning on success
+        assert result.document.metadata.get("diarization") is not None
+
+    def test_diarize_step_failure_keeps_transcript_and_warns(self, monkeypatch, tmp_path):
+        # Path B (vs the backend-setup path A above): backend setup SUCCEEDS, so
+        # DiarizationStep IS added, but diarize_document raises INSIDE the step.
+        # The step must degrade (warn + continue), and the service must still
+        # classify the run as "warning" with the raw transcript saved -- proving
+        # the metadata["diarization"]-absent signal works end-to-end for the
+        # in-step failure path, not just backend-setup failure.
+        from unittest.mock import MagicMock
+
+        self._patch(monkeypatch)
+        cfg = _tmp_config(tmp_path)
+        src_audio = tmp_path / "clip.mp3"
+        src_audio.write_bytes(b"x")
+        monkeypatch.setattr("src.pipeline.steps_ingestion._probe_duration", lambda p: 1.0)
+        monkeypatch.setattr(service, "load_diarization_config", lambda path: MagicMock(enabled=False))
+        monkeypatch.setattr(service, "get_diarization_backend", lambda *a, **k: object())
+
+        def boom(*a, **k):
+            raise RuntimeError("pyannote inference crashed mid-run")
+
+        monkeypatch.setattr("src.pipeline.steps_diarization.diarize_document", boom)
+
+        result = service.transcribe_file(
+            src_audio, model="base", language="en", diarize=True,
+            config_path=cfg, sanitize_output=True,
+        )
+        assert result.status == "warning"  # degraded inside the step, not failed
+        assert Path(result.txt_path).exists()  # raw transcript still saved
+        assert result.document.metadata.get("diarization") is None  # never diarized
+        blob = " ".join(result.warnings + [result.message or ""]).lower()
+        assert "diar" in blob
+
     def test_auto_detect_passes_no_language_kwarg(self, monkeypatch, tmp_path):
         # Integration: real transcribe_audio + real pipeline; only the Whisper
         # model and the decode probe are mocked. Asserts language=None reaches

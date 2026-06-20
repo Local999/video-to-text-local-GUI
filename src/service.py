@@ -24,7 +24,7 @@ from src.pipeline import (
 from src.processing import cleanup_with_ollama
 from src.transcription.diarization_config import load_diarization_config
 from src.transcription.diarizer import create_diarization_backend
-from src.utils import MediaDecodeError, ProcessingError, load_yaml_file, select_device
+from src.utils import MediaDecodeError, load_yaml_file, select_device
 from src.utils.naming import build_output_basename, sanitize_stem
 
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
@@ -195,18 +195,30 @@ def transcribe_file(
     steps = [ingestion_step, transcription_step]
 
     if diarize:
-        diar_cfg = load_diarization_config(cfg["files"]["diarization"])
-        diar_cfg.enabled = True
-        backend = get_diarization_backend(diar_cfg, device, logger)
-        steps.append(
-            DiarizationStep(
-                backend=backend,
-                config=diar_cfg,
-                work_dir=audios_dir / ".diarization_cache",
-                ffmpeg_executable=dependencies["ffmpeg_executable"],
-                num_speakers_override=num_speakers,
+        # Backend setup eagerly loads the pyannote pipeline (model download / HF
+        # auth), which can fail before the pipeline ever runs. Diarization is an
+        # optional enhancement, so degrade gracefully: on any setup failure log
+        # a warning and skip the step -- the transcript is still produced, and
+        # the outcome-classification below flags the missing speaker labels.
+        try:
+            diar_cfg = load_diarization_config(cfg["files"]["diarization"])
+            diar_cfg.enabled = True
+            backend = get_diarization_backend(diar_cfg, device, logger)
+        except Exception as exc:  # noqa: BLE001 -- optional feature, degrade gracefully
+            logger.warning(
+                "Diarization unavailable (%s); transcribing without speaker labels.",
+                exc,
             )
-        )
+        else:
+            steps.append(
+                DiarizationStep(
+                    backend=backend,
+                    config=diar_cfg,
+                    work_dir=audios_dir / ".diarization_cache",
+                    ffmpeg_executable=dependencies["ffmpeg_executable"],
+                    num_speakers_override=num_speakers,
+                )
+            )
 
     if cleanup:
         params = load_yaml_file(cfg["files"]["params"])  # read-only
@@ -252,6 +264,16 @@ def transcribe_file(
     outputs = (doc.metadata.get("outputs") if doc else None) or {}
     warnings: list[str] = []
     status = "success"
+    # Diarization was requested but produced no result -- either backend setup
+    # failed (step skipped above) or diarize_document degraded inside the step.
+    # Key on metadata["diarization"], which is written ONLY on full diarization
+    # success and survives OutputStep (which clobbers pipeline_state to EXPORTED
+    # regardless); its absence is the durable "diarization didn't happen"
+    # signal and covers both failure paths. The raw transcript was still
+    # written, so surface a warning instead of failing.
+    if diarize and not (doc and doc.metadata.get("diarization")):
+        warnings.append("Diarization unavailable; transcript saved without speaker labels.")
+        status = "warning"
     # Cleanup was requested but produced nothing (e.g. Ollama down) -> warning.
     if cleanup and not outputs.get("clean"):
         warnings.append("Cleanup unavailable; raw transcript saved.")
