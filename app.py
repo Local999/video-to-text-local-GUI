@@ -228,6 +228,7 @@ def build_ui() -> gr.Blocks:
                 refresh_btn = gr.Button("Refresh")
                 del_id = gr.Textbox(label="Delete by id", scale=2)
                 del_btn = gr.Button("Delete", variant="stop")
+            search_in = gr.Textbox(label="Search history (filename or date)", placeholder="e.g. lecture or 2026-06-19")
             history_table = gr.Dataframe(
                 headers=_HISTORY_COLUMNS, value=_history_rows(), interactive=False, wrap=True,
             )
@@ -242,6 +243,7 @@ def build_ui() -> gr.Blocks:
         refresh_btn.click(lambda: gr.update(value=_history_rows()), outputs=history_table)
         history_table.select(_load_selected, inputs=[history_table], outputs=[hist_text, hist_file])
         del_btn.click(_delete_selected, inputs=[del_id], outputs=[history_table])
+        search_in.change(lambda q: gr.update(value=_history_rows(_history.search(q))), inputs=search_in, outputs=history_table)
 
     return demo
 
