@@ -5,10 +5,51 @@ import threading
 from pathlib import Path
 
 import gradio as gr
+import gradio_client.utils as _gradio_client_utils
 
 from src.history import HistoryEntry, HistoryStore
 from src.service import transcribe_file
 from src.utils import MediaDecodeError, ProcessingError, load_yaml_file, setup_logging
+
+
+def _install_gradio_client_bool_schema_patch() -> None:
+    """Work around a gradio_client 1.3.0 crash on boolean JSON-schema nodes.
+
+    Loading the GUI's main page builds the API info, which walks every
+    component's JSON schema via gradio_client's ``_json_schema_to_python_type``.
+    pydantic 2.13 emits ``additionalProperties: true`` (a *bool*) for open dict
+    types; the walker then runs ``"const" in True`` and raises
+    ``TypeError: argument of type 'bool' is not iterable``. gradio surfaces that
+    as HTTP 500 on ``/``, and because its launch-time ``url_ok`` check then sees
+    a 500 it aborts with the misleading "localhost is not accessible" error — so
+    the app never actually serves. We can't upgrade gradio (gradio>=5 needs
+    Python>=3.10; this project is pinned to 3.9), so we make the walker treat any
+    non-dict schema node as ``Any``. Cosmetic only: it affects the generated
+    type-hint strings in the API docs, never the GUI's behavior. Idempotent and
+    self-disabling if a future gradio_client drops the private function.
+    """
+    try:
+        original = _gradio_client_utils._json_schema_to_python_type
+    except AttributeError:  # pragma: no cover - future gradio_client without this internal
+        logging.getLogger(__name__).warning(
+            "gradio_client._json_schema_to_python_type not found; "
+            "skipping the boolean-schema compatibility patch."
+        )
+        return
+    if getattr(original, "_bool_schema_safe", False):
+        return
+
+    def _json_schema_to_python_type(schema, defs=None):
+        if not isinstance(schema, dict):
+            return "Any"
+        return original(schema, defs)
+
+    _json_schema_to_python_type._bool_schema_safe = True
+    _gradio_client_utils._json_schema_to_python_type = _json_schema_to_python_type
+
+
+# Must run before any Blocks app builds its API info (i.e. before build_ui/launch).
+_install_gradio_client_bool_schema_patch()
 
 CONFIG_PATH = "configurations/general_config.yaml"
 MODEL_CHOICES = ["tiny", "base", "small", "medium", "large-v3"]
