@@ -1,3 +1,11 @@
+import pytest
+
+# The GUI lives behind the optional requirements-gui.txt profile. Under a
+# CLI-only install (requirements.txt, no gradio) these tests can't import `app`;
+# skip them so the suite stays green for that profile instead of erroring.
+pytest.importorskip("gradio")
+
+
 def test_app_builds_blocks():
     import app
 
