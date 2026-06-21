@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -118,6 +119,13 @@ class TestEnsureFfmpegOnPath:
         assert result is None  # caller surfaces a clear ProcessingError
         assert os.environ["PATH"] == before  # no mutation on failure
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="win32-only path; the test flips global sys.platform to 'win32', "
+        "which drives stdlib shutil.which into a Windows branch that dereferences "
+        "_winapi (None off-Windows -> crashes on Python >=3.12). Real Windows "
+        "behavior is validated on the win32 target, where this test still runs.",
+    )
     def test_windows_uses_exe_name_and_copy_fallback(self, monkeypatch, tmp_path):
         # Two Windows realities at once: (1) subprocess/shutil.which only resolve
         # names whose extension is in PATHEXT, so a bare ``ffmpeg`` shim is
